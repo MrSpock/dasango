@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"github.com/soniah/gosnmp"
 	"net"
-	//	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -33,6 +33,14 @@ type OLT struct {
 func MakeOLT(name string) *OLT {
 	var olt = OLT{}
 	olt.Name = name
+	olt.SNMPSession = &gosnmp.GoSNMP{}
+	//olt.SNMPSession = gosnmp.Default
+	//      olt.SNMPSession.Logger = log.New(os.Stderr, "", 0)
+	olt.SNMPSession.Port = 161
+	olt.SNMPSession.Version = gosnmp.Version2c
+	olt.SNMPSession.Community = "public"
+	olt.SNMPSession.Retries = 3
+	olt.SNMPSession.Timeout = time.Duration(3) * time.Second
 	//	olt.ONUs = make([]ONU, 128)
 	return &olt
 }
@@ -56,10 +64,11 @@ func (o *OLT) Connect() (err error) {
 	//	defer o.SNMPSession.Conn.Close()
 	return err
 }
-func (o *OLT) FindONU(olt_id int, onu_id int) (onu *ONU) {
+func (o *OLT) FindONUById(olt_id int, onu_id int) (ont *ONU) {
 	for _, v := range o.ONUs {
-		if v.OltId == olt_id && onu.Id == onu_id {
-			return onu
+		if v.OltId == olt_id && v.Id == onu_id {
+			ont = &v
+			return ont
 		}
 	}
 	return
@@ -85,7 +94,7 @@ func (o *OLT) GetONUList() (err error) {
 			fmt.Println(err)
 			//fmt.Printf("%s = ", pdu.Name)
 		} else {
-			onu := o.FindONU(olt_id, onu_id)
+			onu := o.FindONUById(olt_id, onu_id)
 			if onu == nil {
 				//				fmt.Fprintf(os.Stdout, "New onu discovered - adding to ONU list (%d:%d %s)\n", olt_id, onu_id, string(pdu.Value.([]byte)))
 				newonu := ONU{onu_id, olt_id, string(pdu.Value.([]byte)), -40, ""}
@@ -105,6 +114,41 @@ func (o *OLT) GetONUList() (err error) {
 	})
 	o.ONUs = onus
 	return err
+
+}
+func (o *OLT) GetONURxLevels() (onus []ONU, err error) {
+	if o.SNMPSession.Conn == nil {
+		//fmt.Println("Establishing missing connection")
+		err = o.Connect()
+		if err != nil {
+			return
+		}
+	}
+	if len(o.ONUs) == 0 {
+		//fmt.Fprintf(os.Stderr, "No ONU found - updating list\n")
+		err = o.GetONUList()
+		if err != nil {
+			return
+		}
+	}
+	//fmt.Println("ONU count after update:", len(o.ONUs))
+	err = o.SNMPSession.BulkWalk(ONU_RX_LEVEL, func(pdu gosnmp.SnmpPDU) (err error) {
+		olt_id, err := GetOnuOltId(pdu.Name)
+		onu_id, err := GetOnuId(pdu.Name)
+		if err != nil {
+			fmt.Println(err)
+			fmt.Printf("%s = ", pdu.Name)
+		} else {
+			onu := o.FindONUById(olt_id, onu_id)
+			if onu != nil {
+				RxLevel := float32((int(pdu.Value.(int)))) / 10
+				onu.RxLevel = RxLevel
+				onus = append(onus, *onu)
+			}
+		}
+		return
+	})
+	return
 
 }
 func (olt *OLT) ReadONURxLevel(onu *ONU) (rxlevel float32, err error) {
